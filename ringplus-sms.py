@@ -104,7 +104,7 @@ class Idler(object):
                 self.M.logout()
             except:
                 pass
-            M = imaplib2.IMAP4_SSL(email_imap_address)
+            self.M = imaplib2.IMAP4_SSL(email_imap_address)
             self.M.login(email_user,email_password)
             self.M.select('INBOX')
             logging.info(log_imap_sucess)
