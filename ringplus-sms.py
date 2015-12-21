@@ -5,13 +5,14 @@
 # RingPlus API details..
 rp_client_id = ''
 rp_client_secret = ''
-redirect_url = 'https://example.com/rp/authenticate'
+redirect_url = 'https://bitstorm.pw/rp/authenticate'
 
 # IMAP and SMTP information used for SMS-to-Email gateway.
 email_user = ''
 email_password = ''
 email_imap_address = 'imap.gmail.com'
 email_smtp_address = 'smtp.gmail.com:587'
+email_query_address = 'txt.voice.google.com'
 
 # Locale used for number formatting.
 locale_id = 'en_US.UTF-8'
@@ -19,7 +20,7 @@ locale_id = 'en_US.UTF-8'
 # Database Configuration. We will eventually support remote hosts.
 # However, this funcationality has not been added yet.
 database_localhost = True # True or False
-database_name = 'ringplus'
+database_name = 'rp_test'
 
 # Enable / Disable Logging
 log_enabled = True # True or False
@@ -29,13 +30,13 @@ log_level = 'DEBUG' # Options: DEBUG, INFO, WARNING, ERROR, CRITICAL
 # Used to override the phone number used for debug / testing purposes.
 number_override = False # True or False
 number_value = '(123) 456-7890'
-
+#number_value = '(812) 484-9511'
 # These strings are used for sending a response to the user.
 str_help = 'You can use: balance'
 str_unknown_user = 'This phone is not associated with a known RingPlus account. Signup at http://bitstorm.pw/rp'
 str_token_error = 'We could not authenticate your account with RingPlus. Please re-authenticate at http://bitstorm.pw/rp'
 str_invalid_command = 'Sorry, I do not understand that request. For a list of valid commands, reply with the word: help'
-str_balance_info = 'Balance: %(bal)s Usage: %(mins)s, %(txts)s, %(mms)s, & %(data)s. %(days)s remaining.' #Variables: bal, mins, txts, mms, data, days
+str_balance_info = 'Balance: %(bal)s Usage: %(mins)s, %(txts)s, %(mms)s, & %(data)s. %(time)s remaining.' #Variables: bal, mins, txts, mms, data, time
 
 # These Strings are used for logging purposes.
 log_service_start = 'INFO: Starting Service'
@@ -46,7 +47,7 @@ log_imap_conn_error = 'INFO: IMAP - Connection Error, reconnecting.'
 log_imap_sync_event = 'INFO: IMAP - Received a sync event from server.'
 log_help = 'INFO: User asked for help.'
 log_balance = 'INFO: User requested balance.'
-log_balance_sent = 'INFO: User balance sent. %(bal)s, %(mins)s, %(txts)s, %(mms)s, %(data)s, %(days)s'
+log_balance_sent = 'INFO: User balance sent. %(bal)s, %(mins)s, %(txts)s, %(mms)s, %(data)s, %(time)s'
 log_unknown_user = 'INFO: User was not found in the database.'
 log_token_error = 'WARNING: User refresh token was invalid.'
 log_invalid_command = 'INFO: User issued an invalid command.'
@@ -56,7 +57,7 @@ log_plan_details_missing = 'WARNING: Plan name exists, but details not found for
 ### The magic happens below this line. Only make changes if you know what you are doing. ###
 
 # Import the required libraries
-import sys, imaplib2, time, smtplib, time, urllib, requests, pymongo, locale, datetime, logging
+import sys, imaplib2, time, smtplib, time, urllib, requests, pymongo, locale, datetime, logging, traceback
 from threading import *
 
 # Setup Logging
@@ -111,6 +112,7 @@ class Idler(object):
         except (imaplib2.IMAP4.abort, imaplib2.IMAP4.error):
             # Login failed, retry in 5 seconds.
             logging.warning(log_imap_login_error)
+            traceback.print_exc()
             time.sleep(5)
             self.doLogin()
             pass
@@ -176,15 +178,16 @@ class Idler(object):
                     if line.startswith('Content-Type: text/plain;'):
                         next(lines)
                         msg = next(lines)
-                # This is where we override the phone number if set.
-                if number_override:
-                    number = number_value
-                # Log the details of the message.
-                logging.info('INFO: Email: '+email)
-                logging.info('INFO: Number: '+number)
-                logging.info('INFO: Message: '+msg)
-                # Process the message.
-                self.doReplies(email, number, msg)
+                if email_query_address in email:
+                    # This is where we override the phone number if set.
+                    if number_override:
+                        number = number_value
+                    # Log the details of the message.
+                    logging.info('INFO: Email: '+email)
+                    logging.info('INFO: Number: '+number)
+                    logging.info('INFO: Message: '+msg)
+                    # Process the message.
+                    self.doReplies(email, number, msg)
     # This function is called to process received messages.
     def doReplies(self, email, number, msg):
         # Commands are processed here.
@@ -195,10 +198,13 @@ class Idler(object):
         elif msg.lower().startswith('balance'):
             logging.info(log_balance)
             self.checkBalance(email, number, msg)
+        elif msg.lower().startswith('debug'):
+            self.doLogin()
         # Command was not recognized / failed to process.
         else:
             logging.info(log_invalid_command)
             self.sendMsg(email, str_invalid_command)
+        logging.info('INFO: Reply Completed.\n\n')
 
     # This function is called when the user requests their balance.
     def checkBalance(self, email, number, msg):
@@ -222,6 +228,7 @@ class Idler(object):
                 account_balance = ''
                 self.updateUser(tokens)
                 # Get the users account account id and balance.
+                user = db.users.find_one({"accounts.phone_number": number})
                 for account in user['accounts']:
                     if account['phone_number'] == number:
                         account_id = account['id']
@@ -243,20 +250,50 @@ class Idler(object):
                 txts = locale.format("%d", txts, grouping=True)
                 mms = locale.format("%d", mms, grouping=True)
                 data = locale.format("%d", data, grouping=True)
-                # Calculate days remaining in billing cycle.
-                recur = account['active_billing_subscriptions'][0]['next_billed_at']
-                recur = datetime.datetime.strptime( recur[:19], "%Y-%m-%dT%H:%M:%S" )
-                now = datetime.datetime.utcnow().isoformat()
-                now = datetime.datetime.strptime( now[:19], "%Y-%m-%dT%H:%M:%S" )
-                days = recur-now
-                days = days.days
                 # Get the plan name.
-                plan_name = account['active_billing_subscriptions'][0]['name']
+                base_plans = {}
+                base_plan_name = 'None'
+                for sub in account['active_billing_subscriptions']:
+                    plan_name = sub['name']
+                    plan_info = db.plan_names.find_one({'name': plan_name})
+                    if not plan_info:
+                        # Plan was not found in the database, log the details.
+                        logging.warning(log_plan_name_missing % {'plan_name': plan_name})
+                        plan_details = None
+                    else:
+                        plan_details = db.plan_details.find_one({'plan_id': plan_info['planMatch']})
+                        if not plan_details:
+                            # The plan is in the database, but the details are
+                            # missing or mapped to the worng plan_id, log the details.
+                            logging.warning(log_plan_details_missing % {'plan_name': plan_name,'plan_id': plan_info['planMatch']})
+                            logging.warning(plan_info)
+                        if plan_info['type'] == 'base':
+                            logging.info('Base plan identified: '+plan_name)
+                            # Calculate time remaining in billing cycle.
+                            recur = sub['end_date']
+                            recur = datetime.datetime.strptime( recur[:19], "%Y-%m-%dT%H:%M:%S" )
+                            now = datetime.datetime.utcnow().isoformat()
+                            now = datetime.datetime.strptime( now[:19], "%Y-%m-%dT%H:%M:%S" )
+                            plan_time = recur-now
+                            base_plans.update({plan_name:{'time':plan_time}})
+                if base_plans:
+                    base_plan_name = max(base_plans, key=lambda x: base_plans[x]['time'].days)
+                    time = base_plans[base_plan_name]['time']
+                else:
+                    recur = account['active_billing_subscriptions'][0]['end_date']
+                    recur = datetime.datetime.strptime( recur[:19], "%Y-%m-%dT%H:%M:%S" )
+                    now = datetime.datetime.utcnow().isoformat()
+                    now = datetime.datetime.strptime( now[:19], "%Y-%m-%dT%H:%M:%S" )
+                    time = recur-now
+
+
                 # Check the plan is listed in the database.
-                plan_info = db.plan_names.find_one({'name': plan_name})
+                #if number == '18124842647':
+                #    base_plan_name = 'Cherry - Unlimited Talk/SMS, 2GB Package'
+                plan_info = db.plan_names.find_one({'name': base_plan_name})
                 if not plan_info:
                     # Plan was not found in the database, log the details.
-                    logging.warning(log_plan_name_missing % {'plan_name': plan_name})
+                    logging.warning(log_plan_name_missing % {'plan_name': base_plan_name})
                     plan_details = None
                 else:
                     # Found the plan name, lets get the details.
@@ -284,17 +321,9 @@ class Idler(object):
                     # We found the plan details in the database, let's process them.
                     # If the plan is unlimited lets show the user in a better format.
                     mins_allot = plan_details['min_usa_allotment']
-                    if mins_allot == -1:
-                        mins_allot = 'Unlim'
                     txts_allot = plan_details['sms_allotment']
-                    if txts_allot == -1:
-                        txts_allot = 'Unlim'
                     mms_allot = plan_details['mms_allotment']
-                    if mms_allot == -1:
-                        mms_allot = 'Unlim'
                     data_allot = plan_details['mb_allotment']
-                    if data_allot == -1:
-                        data_allot = 'Unlim'
                     # Lets process all the active subscriptions.
                     for sub in account['active_billing_subscriptions']:
                         plan_info = db.plan_names.find_one({'name': sub['name']})
@@ -312,19 +341,40 @@ class Idler(object):
                                 # If the plan is an addon, continue processing.
                                 if plan_info['type'] == 'addon':
                                     # If the plan is not unlimited, calculate the allotments.
-                                    if mins_allot is not -1:
+                                    if mins_allot is not -1 or plan_details['min_usa_allotment'] is not -1:
                                         mins_allot = mins_allot+plan_details['min_usa_allotment']
-                                    if txts_allot is not -1:
+                                    else:
+                                        mins_allot = -1
+                                    if txts_allot is not -1 or plan_details['sms_allotment'] is not -1:
                                         txts_allot = txts_allot+plan_details['sms_allotment']
-                                    if mms_allot is not -1:
+                                    else:
+                                        txts_allot = -1
+                                    if mms_allot is not -1 or plan_details['mms_allotment'] is not -1:
                                         mms_allot = mms_allot+plan_details['mms_allotment']
-                                    if data_allot is not -1:
+                                    else:
+                                        mms_allot = -1
+                                    if data_allot is not -1 or plan_details['mb_allotment'] is not -1:
                                         data_allot = data_allot+plan_details['mb_allotment']
+                                    else:
+                                        data_allot = -1
+
                     # Format the usage and allotments for the response.
-                    mins_allot = locale.format("%d", mins_allot, grouping=True)
-                    txts_allot = locale.format("%d", txts_allot, grouping=True)
-                    mms_allot = locale.format("%d", mms_allot, grouping=True)
-                    data_allot = locale.format("%d", data_allot, grouping=True)
+                    if mins_allot == -1:
+                        mins_allot = 'unlimited'
+                    else:
+                        mins_allot = locale.format("%d", mins_allot, grouping=True)
+                    if txts_allot == -1:
+                        txts_allot = 'unlimited'
+                    else:
+                        txts_allot = locale.format("%d", txts_allot, grouping=True)
+                    if mms_allot == -1:
+                        mms_allot = 'unlimited'
+                    else:
+                        mms_allot = locale.format("%d", mms_allot, grouping=True)
+                    if data_allot == -1:
+                        data_allot = 'unlimited'
+                    else:
+                        data_allot = locale.format("%d", data_allot, grouping=True)
 
                     mins = str(mins)+'/'+str(mins_allot)+' minutes'
                     txts =str(txts)+'/'+str(txts_allot)+' texts'
@@ -332,12 +382,40 @@ class Idler(object):
                     data = str(data)+'/'+str(data_allot)+' MB'
                 bal = locale.currency( account_balance, grouping=True )
                 # let's use proper english? ^_^
-                if days is not 1:
-                    days = str(days)+' days'
+                timeDays = time.days
+                timeHours = time.seconds/60/60
+                timeMinutes = time.seconds/60
+                timeSeconds = time.seconds
+                if time.days > 1:
+                    if timeHours >= 12:
+                        time = str(time.days+1)+' days'
+                    else:
+                        time = str(time.days)+' days'
+                elif time.days == 1:
+                    if timeHours >= 12:
+                        time = '2 days'
+                    else:
+                        '1 day'
                 else:
-                    days = str(days)+' day'
+                    if timeHours > 1:
+                        time = str(timeHours)+' hours'
+                    elif timeHours == 1:
+                        time = '1 hour'
+                    else:
+                        if timeMinutes == 1:
+                            if timeSeconds >= 30:
+                            time = '2 minutes'
+                            else:
+                                time = '1 minute'
+                        elif timeMinutes < 1:
+                                time = '1 minute'
+                        else:
+                            if timeSeconds >= 30:
+                                time = str(timeMinutes+1)+' minutes'
+                            else:
+                                time = str(timeMinutes)+' minutes'
                 # Create a dictionary of all the details.
-                details = {'bal':bal,'mins':mins,'txts':txts,'mms':mms,'data':data,'days':days}
+                details = {'bal':bal,'mins':mins,'txts':txts,'mms':mms,'data':data,'time':time}
                 # Send the details to the user, and log the event.
                 self.sendMsg(email, str_balance_info % details)
                 logging.info(log_balance_sent % details)
