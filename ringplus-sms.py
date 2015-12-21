@@ -30,7 +30,7 @@ log_level = 'DEBUG' # Options: DEBUG, INFO, WARNING, ERROR, CRITICAL
 # Used to override the phone number used for debug / testing purposes.
 number_override = False # True or False
 number_value = '(123) 456-7890'
-#number_value = '(812) 484-9511'
+
 # These strings are used for sending a response to the user.
 str_help = 'You can use: balance'
 str_unknown_user = 'This phone is not associated with a known RingPlus account. Signup at http://bitstorm.pw/rp'
@@ -288,8 +288,6 @@ class Idler(object):
 
 
                 # Check the plan is listed in the database.
-                #if number == '18124842647':
-                #    base_plan_name = 'Cherry - Unlimited Talk/SMS, 2GB Package'
                 plan_info = db.plan_names.find_one({'name': base_plan_name})
                 if not plan_info:
                     # Plan was not found in the database, log the details.
